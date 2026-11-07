@@ -1,0 +1,12 @@
+#!/bin/bash
+if [ -z "$1" ]; then
+    echo "Error: Please provide a wallpaper path."
+    echo "Usage: theme /path/to/wallpaper.png"
+    exit 1
+fi
+
+# 1. Paint the root window and save state for BSPWM
+feh --bg-fill "$1"
+
+# 2. Generate dynamic terminal and bar colors
+matugen image --source-color-index 0 "$1"
