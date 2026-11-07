@@ -1,0 +1,16 @@
+[config]
+set = false
+
+[templates.alacritty]
+input_path = "~/.config/matugen/templates/alacritty.toml"
+output_path = "~/.config/alacritty/matugen-colors.toml"
+
+[templates.kitty]
+input_path = "~/.config/matugen/templates/kitty.conf"
+output_path = "~/.config/kitty/matugen-colors.conf"
+post_hook = "killall -USR1 kitty"
+
+[templates.polybar]
+input_path = "~/.config/matugen/templates/polybar.ini"
+output_path = "~/.config/polybar/matugen-colors.ini"
+post_hook = "sh -c '~/.config/polybar/launch.sh'"
