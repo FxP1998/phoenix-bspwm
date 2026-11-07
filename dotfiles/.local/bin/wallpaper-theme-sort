@@ -1,0 +1,528 @@
+#!/usr/bin/env python3
+"""
+wallpaper-theme-sort
+Sort wallpapers into folders named after popular Linux color schemes.
+
+How it works
+------------
+1. ffmpeg downscales each image to 96x54 and prints raw RGB (no PIL needed).
+2. Pixels are converted from sRGB to CIELAB, then clustered with k-means
+   to get a compact dominant-color palette (color + weight).
+3. Each image palette is turned into a hue histogram (weighted by chroma)
+   and compared with the official accent palette of every theme.
+   Signature colors of each theme get extra weight so that, e.g., a warm
+   orange image matches Gruvbox and not Nord.
+4. The best theme is always assigned. Close runner-ups (within --rel of the
+   top score and above --abs) are assigned too, up to --max-themes.
+   Near-grayscale images go to "Monochrome".
+5. The image is MOVED into the best-match folder and COPIED into the other
+   matching folders. Use --copy to keep the originals in place instead.
+
+Requirements: python3 + ffmpeg.
+"""
+
+import argparse
+import hashlib
+import math
+import os
+import random
+import shutil
+import subprocess
+import sys
+
+# ---------------------------------------------------------------------------
+# Theme definitions (official accent palettes)
+# ---------------------------------------------------------------------------
+THEMES = {
+    "Catppuccin": {
+        "bg": "#1e1e2e",
+        "accents": ["#f5e0dc", "#f2cdcd", "#f5c2e7", "#cba6f7", "#f38ba8",
+                    "#eba0ac", "#fab387", "#f9e2af", "#a6e3a1", "#94e2d5",
+                    "#89dceb", "#74c7ec", "#89b4fa", "#b4befe"],
+    },
+    "Dracula": {
+        "bg": "#282a36",
+        "accents": ["#ff79c6", "#bd93f9", "#8be9fd", "#50fa7b", "#ffb86c",
+                    "#ff5555", "#f1fa8c", "#6272a4"],
+    },
+    "Nord": {
+        "bg": "#2e3440",
+        "accents": ["#8fbcbb", "#88c0d0", "#81a1c1", "#5e81ac", "#bf616a",
+                    "#d08770", "#ebcb8b", "#a3be8c", "#b48ead"],
+    },
+    "Gruvbox": {
+        "bg": "#282828",
+        "accents": ["#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b",
+                    "#8ec07c", "#fe8019"],
+    },
+    "Tokyo Night": {
+        "bg": "#1a1b26",
+        "accents": ["#f7768e", "#ff9e64", "#e0af68", "#9ece6a", "#73daca",
+                    "#7aa2f7", "#2ac3de", "#bb9af7"],
+    },
+    "Everforest": {
+        "bg": "#2d353b",
+        "accents": ["#e67e80", "#e69875", "#dbbc7f", "#a7c080", "#83c092",
+                    "#7fbbb3", "#d699b6", "#859289"],
+    },
+    "Solarized": {
+        "bg": "#002b36",
+        "accents": ["#b58900", "#cb4b16", "#dc322f", "#d33682", "#6c71c4",
+                    "#268bd2", "#2aa198", "#859900"],
+    },
+    "One Dark": {
+        "bg": "#282c34",
+        "accents": ["#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd",
+                    "#56b6c2"],
+    },
+    "Rose Pine": {
+        "bg": "#191724",
+        "accents": ["#eb6f92", "#f6c177", "#ebbcba", "#31748f", "#9ccfd8",
+                    "#c4a7e7", "#908caa"],
+    },
+    "Kanagawa": {
+        "bg": "#1f1f28",
+        "accents": ["#c34043", "#ffa066", "#c0a36e", "#76946a", "#7aa89f",
+                    "#7e9cd8", "#957fb8", "#d27e99"],
+    },
+}
+
+# Extra weight for colors that define a theme's identity.
+SIGNATURE = {
+    "Catppuccin": {"#cba6f7": 3, "#f5c2e7": 3, "#89b4fa": 2, "#f38ba8": 2, "#a6e3a1": 2},
+    "Dracula":    {"#bd93f9": 4, "#ff79c6": 4, "#8be9fd": 2, "#50fa7b": 2},
+    "Nord":       {"#88c0d0": 4, "#81a1c1": 3, "#5e81ac": 3, "#8fbcbb": 2},
+    "Gruvbox":    {"#fe8019": 4, "#fabd2f": 3, "#fb4934": 2, "#b8bb26": 2},
+    "Tokyo Night":{"#7aa2f7": 4, "#bb9af7": 3, "#2ac3de": 2, "#f7768e": 2},
+    "Everforest": {"#a7c080": 4, "#7fbbb3": 3, "#83c092": 2, "#dbbc7f": 2},
+    "Solarized":  {"#268bd2": 3, "#2aa198": 3, "#b58900": 3, "#cb4b16": 2},
+    "One Dark":   {"#61afef": 4, "#98c379": 2, "#e06c75": 2, "#c678dd": 2},
+    "Rose Pine":  {"#c4a7e7": 4, "#eb6f92": 4, "#9ccfd8": 2, "#f6c177": 2},
+    "Kanagawa":   {"#7e9cd8": 4, "#957fb8": 3, "#d27e99": 3, "#ffa066": 2},
+}
+
+THEME_ORDER = list(THEMES) + ["Monochrome"]
+IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
+
+# ---------------------------------------------------------------------------
+# Color math
+# ---------------------------------------------------------------------------
+def srgb_to_lab(hexstr):
+    h = hexstr.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+
+    def lin(c):
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = lin(r), lin(g), lin(b)
+    x = (r * 0.4124 + g * 0.3576 + b * 0.1805) / 0.95047
+    y = r * 0.2126 + g * 0.7152 + b * 0.0722
+    z = (r * 0.0193 + g * 0.1192 + b * 0.9505) / 1.08883
+
+    def f(t):
+        return t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116
+
+    fx, fy, fz = f(x), f(y), f(z)
+    return (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
+
+
+def lch(lab):
+    L, a, b = lab
+    return L, math.hypot(a, b), math.degrees(math.atan2(b, a)) % 360
+
+
+def kmeans(points, k=10, iters=14):
+    """Small deterministic k-means++ for Lab points."""
+    if not points:
+        return []
+    rnd = random.Random(42)
+    centers = [points[rnd.randrange(len(points))]]
+    for _ in range(k - 1):
+        d2 = [min(math.dist(p, c) ** 2 for c in centers) for p in points]
+        total = sum(d2)
+        if total <= 0:
+            break
+        target, acc = rnd.random() * total, 0.0
+        for p, d in zip(points, d2):
+            acc += d
+            if acc >= target:
+                centers.append(p)
+                break
+        else:
+            centers.append(points[-1])
+    for _ in range(iters):
+        groups = [[] for _ in centers]
+        for p in points:
+            i = min(range(len(centers)), key=lambda j: math.dist(p, centers[j]))
+            groups[i].append(p)
+        new = [
+            tuple(sum(v[j] for v in g) / len(g) for j in range(3)) if g else centers[i]
+            for i, g in enumerate(groups)
+        ]
+        if all(math.dist(a, b) < 0.3 for a, b in zip(new, centers)):
+            break
+        centers = new
+    counts = [0] * len(centers)
+    for p in points:
+        i = min(range(len(centers)), key=lambda j: math.dist(p, centers[j]))
+        counts[i] += 1
+    total = sum(counts)
+    return [(c, n / total) for c, n in zip(centers, counts) if n]
+
+
+def hue_hist(pairs, bins=36):
+    """Chroma-weighted hue histogram. Neutral colors are ignored."""
+    hist = [0.0] * bins
+    total = neutral = 0.0
+    for lab, weight in pairs:
+        L, C, H = lch(lab)
+        if C < 9:
+            neutral += weight
+        else:
+            hw = weight * min(C, 60)
+            idx = int(H // (360 / bins)) % bins
+            hist[idx] += hw * 0.7
+            hist[(idx - 1) % bins] += hw * 0.15
+            hist[(idx + 1) % bins] += hw * 0.15
+        total += weight
+    s = sum(hist)
+    if s:
+        hist = [v / s for v in hist]
+    return hist, (neutral / total if total else 0)
+
+
+def build_profiles():
+    profiles = {}
+    for name, theme in THEMES.items():
+        sig = {k.lower(): v for k, v in SIGNATURE.get(name, {}).items()}
+        pairs = [(srgb_to_lab(a), sig.get(a.lower(), 1)) for a in theme["accents"]]
+        pairs.append((srgb_to_lab(theme["bg"]), 0.6))
+        hist, _ = hue_hist(pairs)
+        profiles[name] = {"hist": hist}
+    return profiles
+
+
+# ---------------------------------------------------------------------------
+# Image analysis
+# ---------------------------------------------------------------------------
+def analyze(path, width=96, height=54):
+    cmd = [
+        "ffmpeg", "-v", "error", "-i", path,
+        "-vf", f"scale={width}:{height}:flags=area",
+        "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+    ]
+    raw = subprocess.run(cmd, capture_output=True, check=True).stdout
+    pixels = [raw[i:i + 3] for i in range(0, len(raw), 3) if len(raw[i:i + 3]) == 3]
+    if not pixels:
+        raise RuntimeError("ffmpeg returned no pixels")
+    pts = [srgb_to_lab("#%02x%02x%02x" % tuple(p)) for p in pixels]
+    lchs = [lch(p) for p in pts]
+    mean_l = sum(x[0] for x in lchs) / len(lchs)
+    chroma_frac = sum(1 for x in lchs if x[1] > 12) / len(lchs)
+    return {
+        "palette": kmeans(pts, 10),
+        "mean_l": mean_l,
+        "chroma_frac": chroma_frac,
+    }
+
+
+def score(info, name, profiles):
+    hist, _ = hue_hist(info["palette"])
+    inter = sum(min(a, b) for a, b in zip(hist, profiles[name]["hist"]))
+    chroma = info["chroma_frac"]
+    vivid = max(0.0, min(1.0, (chroma - 0.25) / 0.6))
+    if name in ("Nord", "Catppuccin", "Everforest", "Rose Pine"):
+        vivid_bonus = 1.0 - vivid * 0.35       # muted themes
+    elif name in ("Dracula", "Tokyo Night", "One Dark"):
+        vivid_bonus = 0.8 + vivid * 0.3        # vivid themes
+    else:
+        vivid_bonus = 0.9 + vivid * 0.15
+    dark_mass = sum(w for c, w in info["palette"] if lch(c)[0] < 40)
+    tone = 0.75 + 0.25 * min(1.0, dark_mass * 2.2)
+    return inter * vivid_bonus * tone, inter
+
+
+def color_name(hue):
+    if hue < 55:
+        return "red"
+    if hue < 80:
+        return "orange"
+    if hue < 110:
+        return "yellow"
+    if hue < 170:
+        return "green"
+    if hue < 230:
+        return "cyan"
+    if hue < 300:
+        return "blue"
+    if hue < 330:
+        return "purple"
+    return "pink"
+
+
+def describe(info):
+    """Short human-readable dominant color description."""
+    names = []
+    for c, w in sorted(info["palette"], key=lambda x: -x[1])[:4]:
+        L, C, H = lch(c)
+        nm = "gray" if C < 8 else color_name(H)
+        names.append(f"{nm} {int(w * 100)}%")
+    return ", ".join(names)
+
+
+def slugify(text):
+    return "-".join(text.lower().replace("_", " ").split())
+
+
+def unique_path(path):
+    """Return path, or path-2.ext / path-3.ext ... if it already exists."""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    n = 2
+    while os.path.exists(f"{base}-{n}{ext}"):
+        n += 1
+    return f"{base}-{n}{ext}"
+
+
+def descriptive_name(theme, info, seq, ext):
+    """e.g. gruvbox-dark-orange-purple-01.png"""
+    if theme == "Monochrome":
+        colors = ["gray"]
+    else:
+        chromatic = sorted(
+            ((c, w) for c, w in info["palette"] if lch(c)[1] > 12),
+            key=lambda x: -x[1],
+        )
+        colors = []
+        for c, w in chromatic:
+            nm = color_name(lch(c)[2])
+            if nm not in colors:
+                colors.append(nm)
+            if len(colors) == 2:
+                break
+        if not colors:
+            colors = ["gray"]
+
+    parts = [slugify(theme)]
+    if info["mean_l"] < 22:
+        parts.append("dark")
+    elif info["mean_l"] > 62:
+        parts.append("light")
+    parts.extend(colors)
+    parts.append(f"{seq:02d}")
+    return "-".join(parts) + ext
+
+
+def rename_existing(directory, report_name="rename-report.txt"):
+    """Rename images that are already inside theme folders."""
+    theme_dirs = [d for d in THEME_ORDER if os.path.isdir(os.path.join(directory, d))]
+    if not theme_dirs:
+        sys.exit(f"No theme folders found in {directory}")
+
+    # Group identical files so each unique image is analyzed only once.
+    groups = {}
+    for theme in theme_dirs:
+        theme_path = os.path.join(directory, theme)
+        for f in sorted(os.listdir(theme_path)):
+            p = os.path.join(theme_path, f)
+            if not os.path.isfile(p) or not f.lower().endswith(IMAGE_EXT):
+                continue
+            digest = hashlib.md5(open(p, "rb").read()).hexdigest()
+            entry = groups.setdefault(digest, {"path": p, "files": []})
+            entry["files"].append((theme, f))
+
+    infos = {}
+    for digest, group in groups.items():
+        try:
+            infos[digest] = analyze(group["path"])
+        except Exception as exc:
+            print(f"  SKIP (analysis failed) {group['path']}: {exc}")
+
+    report = ["Rename report", "=" * 60, ""]
+    renamed = 0
+    for theme in theme_dirs:
+        members = sorted(
+            (f, digest)
+            for digest, group in groups.items()
+            if digest in infos
+            for t, f in group["files"]
+            if t == theme
+        )
+        for seq, (f, digest) in enumerate(members, 1):
+            ext = os.path.splitext(f)[1].lower()
+            new = descriptive_name(theme, infos[digest], seq, ext)
+            src = os.path.join(directory, theme, f)
+            dst = os.path.join(directory, theme, new)
+            if os.path.abspath(src) == os.path.abspath(dst):
+                continue
+            if os.path.exists(dst):
+                base, ext2 = os.path.splitext(new)
+                n = 2
+                while os.path.exists(os.path.join(directory, theme, f"{base}-{n}{ext2}")):
+                    n += 1
+                new = f"{base}-{n}{ext2}"
+                dst = os.path.join(directory, theme, new)
+            os.rename(src, dst)
+            report.append(f"{theme}/{f}\n    -> {theme}/{new}")
+            renamed += 1
+    report += ["", f"Renamed: {renamed}"]
+    path = os.path.join(directory, report_name)
+    with open(path, "w") as fh:
+        fh.write("\n".join(report) + "\n")
+    print(f"\nRenamed {renamed} file(s).")
+    print(f"Report: {path}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main():
+    ap = argparse.ArgumentParser(
+        description="Sort wallpapers into popular Linux color-scheme folders."
+    )
+    ap.add_argument("directory", nargs="?", default=os.path.expanduser("~/Pictures/wallpapers"),
+                    help="folder containing wallpapers (default: ~/Pictures/wallpapers)")
+    ap.add_argument("--dry-run", action="store_true", help="show matches, change nothing")
+    ap.add_argument("--copy", action="store_true",
+                    help="keep originals and copy into every matching folder")
+    ap.add_argument("--max-themes", type=int, default=3,
+                    help="maximum folders per image (default: 3)")
+    ap.add_argument("--rel", type=float, default=0.85,
+                    help="a runner-up must reach this fraction of the top score (default: 0.85)")
+    ap.add_argument("--abs", type=float, default=0.22,
+                    help="minimum absolute score for runner-up themes (default: 0.22)")
+    ap.add_argument("--mono", type=float, default=0.06,
+                    help="chroma fraction below which an image is Monochrome (default: 0.06)")
+    ap.add_argument("--report", default="theme-sort-report.txt",
+                    help="report filename inside the directory")
+    ap.add_argument("--no-rename", action="store_true",
+                    help="keep original filenames")
+    ap.add_argument("--rename-existing", action="store_true",
+                    help="rename images already inside the theme folders, in place")
+    args = ap.parse_args()
+
+    directory = os.path.abspath(os.path.expanduser(args.directory))
+    if not os.path.isdir(directory):
+        sys.exit(f"Not a directory: {directory}")
+    if not shutil.which("ffmpeg"):
+        sys.exit("ffmpeg is required but was not found in PATH")
+
+    if args.rename_existing:
+        rename_existing(directory)
+        return
+
+    files = sorted(
+        f for f in os.listdir(directory)
+        if os.path.isfile(os.path.join(directory, f)) and f.lower().endswith(IMAGE_EXT)
+    )
+    if not files:
+        sys.exit(f"No images found directly in {directory}")
+
+    profiles = build_profiles()
+    assignments = {}
+    infos = {}
+    print(f"Analyzing {len(files)} image(s) in {directory}\n")
+
+    for i, f in enumerate(files, 1):
+        path = os.path.join(directory, f)
+        try:
+            info = analyze(path)
+        except Exception as exc:
+            print(f"  [{i}/{len(files)}] SKIP {f}: {exc}")
+            continue
+        if info["chroma_frac"] < args.mono:
+            picks = ["Monochrome"]
+            ranked = [("Monochrome", 0.0)]
+        else:
+            ranked = sorted(
+                ((n, score(info, n, profiles)[0]) for n in THEMES),
+                key=lambda kv: -kv[1],
+            )
+            picks = [ranked[0][0]]
+            for name, s in ranked[1:]:
+                if len(picks) >= args.max_themes:
+                    break
+                if s >= args.abs and s >= ranked[0][1] * args.rel:
+                    picks.append(name)
+        assignments[f] = picks
+        infos[f] = info
+        detail = " | ".join(
+            f"{n} {s:.2f}" for n, s in ranked[:4] if n != "Monochrome"
+        )
+        print(f"  [{i}/{len(files)}] {f}\n      colors: {describe(info)}")
+        print(f"      -> {', '.join(picks)}   ({detail})")
+
+    # Build new descriptive filenames: theme prefix + tone + dominant colors + number.
+    new_names = {}
+    if not args.no_rename:
+        for theme in THEME_ORDER:
+            members = sorted(f for f, picks in assignments.items() if theme in picks)
+            for seq, f in enumerate(members, 1):
+                ext = os.path.splitext(f)[1].lower()
+                new_names.setdefault(f, {})[theme] = descriptive_name(
+                    theme, infos[f], seq, ext
+                )
+
+    if args.dry_run:
+        print("\nDry run: nothing was changed.")
+        if new_names:
+            print("\nPlanned filenames:")
+            for f in sorted(assignments):
+                for theme in assignments[f]:
+                    print(f"  {theme}/{new_names[f][theme]}")
+        return
+
+    for theme in THEME_ORDER:
+        os.makedirs(os.path.join(directory, theme), exist_ok=True)
+
+    report = ["Theme sort report", "=" * 60, ""]
+    moved = copied = skipped = 0
+    for f in sorted(assignments):
+        src = os.path.join(directory, f)
+        picks = assignments[f]
+        primary_name = new_names.get(f, {}).get(picks[0], f)
+        primary = os.path.join(directory, picks[0], primary_name)
+        if os.path.exists(primary):
+            print(f"  SKIP (already exists): {picks[0]}/{primary_name}")
+            skipped += 1
+            continue
+        placed = []
+        if args.copy:
+            for theme in picks:
+                name = new_names.get(f, {}).get(theme, f)
+                target = os.path.join(directory, theme, name)
+                if theme != picks[0]:
+                    target = unique_path(target)
+                shutil.copy2(src, target)
+                placed.append(f"{theme}/{os.path.basename(target)}")
+                copied += 1
+        else:
+            shutil.move(src, primary)
+            moved += 1
+            placed.append(f"{picks[0]}/{primary_name}")
+            for theme in picks[1:]:
+                name = new_names.get(f, {}).get(theme, f)
+                target = unique_path(os.path.join(directory, theme, name))
+                shutil.copy2(primary, target)
+                placed.append(f"{theme}/{os.path.basename(target)}")
+                copied += 1
+        report.append(f"{f}\n    -> {', '.join(placed)}")
+
+    report += [
+        "",
+        f"Images processed: {len(assignments)}",
+        f"Moved: {moved}",
+        f"Copied (including multi-theme copies): {copied}",
+        f"Skipped: {skipped}",
+    ]
+    report_path = os.path.join(directory, args.report)
+    with open(report_path, "w") as fh:
+        fh.write("\n".join(report) + "\n")
+
+    print(f"\nDone. Moved {moved}, copied {copied}, skipped {skipped}.")
+    print(f"Report: {report_path}")
+
+
+if __name__ == "__main__":
+    main()
