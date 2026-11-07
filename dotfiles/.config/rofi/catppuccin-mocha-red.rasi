@@ -1,0 +1,79 @@
+* {
+    crust: #11111b;
+    base: #1e1e2e;
+    text: #cdd6f4;
+    red: #f38ba8;
+    surface0: #313244;
+
+    background-color: transparent;
+    text-color: @text;
+    margin: 0;
+    padding: 0;
+}
+
+window {
+    width: 500px;
+    background-color: @base;
+    border: 2px solid;
+    border-color: @red;
+    border-radius: 8px;
+}
+
+mainbox {
+    padding: 20px;
+    children: [inputbar, listview];
+}
+
+inputbar {
+    background-color: @surface0;
+    border-radius: 4px;
+    padding: 10px;
+    children: [prompt, entry];
+    spacing: 10px;
+}
+
+prompt {
+    text-color: @red;
+    font: "JetBrainsMono Nerd Font 12";
+}
+
+entry {
+    placeholder: "Search Applications...";
+    placeholder-color: #6c7086;
+    text-color: @text;
+}
+
+listview {
+    margin: 15px 0 0 0;
+    lines: 7;
+    columns: 1;
+    fixed-height: false;
+    spacing: 5px;
+}
+
+element {
+    padding: 10px;
+    border-radius: 4px;
+    spacing: 10px;
+    children: [element-icon, element-text];
+}
+
+element normal.normal, element alternate.normal {
+    background-color: transparent;
+}
+
+element selected.normal {
+    background-color: @surface0;
+    text-color: @red;
+    border: 0 0 0 2px solid;
+    border-color: @red;
+}
+
+element-text {
+    text-color: inherit;
+    vertical-align: 0.5;
+}
+
+element-icon {
+    size: 24px;
+}

@@ -1,0 +1,182 @@
+# ==============================================================================
+# AUTHOR: M. H. IMAM (FxP1998)
+# GITHUB: https://github.com/FxP1998
+# ==============================================================================
+
+# ==============================================================================
+# 1. SYSTEM & WM CONTROLS
+# ==============================================================================
+
+# Reload sxhkd configuration
+super + Escape
+	pkill -USR1 -x sxhkd
+n# Lock Screen
+super + x
+	~/.local/bin/lock
+
+# Quit / Restart bspwm
+super + alt + {q,r}
+	bspc {quit,wm -r}
+
+# Close and Kill Window
+super + {_,shift + }w
+	bspc node -{c,k}
+
+# ==============================================================================
+# 2. APPLICATION LAUNCHERS (The "Super" Layer)
+# ==============================================================================
+
+# Terminal (Alacritty)
+super + Return
+	alacritty
+
+# App Launcher (Rofi)
+super + d
+	rofi -show drun
+
+# Web Browser (Firefox)
+super + b
+	firefox
+
+# GUI File Manager (Thunar)
+super + e
+	thunar
+
+# TUI File Manager (Yazi via Kitty)
+super + shift + e
+	kitty -e yazi
+
+# Terminal Music Player (Kew via Kitty)
+super + m
+	kitty kew
+
+# Media Player (VLC)
+super + v
+	vlc
+
+# ==============================================================================
+# 3. WINDOW STATES & LAYOUTS
+# ==============================================================================
+
+# Set Window State (Tiled, Pseudo-tiled, Floating, Fullscreen)
+super + {t,shift + t,s,f}
+	bspc node -t {tiled,pseudo_tiled,floating,fullscreen}
+
+# Alternate between Tiled and Monocle layout (Shifted from super+m to avoid Kew conflict)
+super + alt + m
+	bspc desktop -l next
+
+# Set Node Flags (Marked, Locked, Sticky, Private)
+super + ctrl + {m,x,y,z}
+	bspc node -g {marked,locked,sticky,private}
+
+# Send newest marked node to newest preselected node
+super + y
+	bspc node newest.marked.local -n newest.!automatic.local
+
+# Swap current node with the biggest window
+super + g
+	bspc node -s biggest.window
+
+# ==============================================================================
+# 4. FOCUS & MOVEMENT
+# ==============================================================================
+
+# Focus node in given direction (Vim keys)
+super + {h,j,k,l}
+	bspc node -f {west,south,north,east}
+
+# Swap node in given direction
+super + shift + {h,j,k,l}
+	bspc node -s {west,south,north,east}
+
+# Focus next/previous window in current desktop
+super + {_,shift + }c
+	bspc node -f {next,prev}.local.!hidden.window
+
+# Focus next/previous desktop
+super + bracket{left,right}
+	bspc desktop -f {prev,next}.local
+
+# Focus or send window to specific desktop
+super + {_,shift + }{1-9,0}
+	bspc {desktop -f,node -d} '^{1-9,10}'
+
+# Focus the last node/desktop
+super + {grave,Tab}
+	bspc {node,desktop} -f last
+
+# ==============================================================================
+# 5. RESIZE & FLOAT MANAGEMENT
+# ==============================================================================
+
+# Expand a window by moving its sides outward
+super + alt + {h,j,k,l}
+	bspc node -z {left -20 0,bottom 0 20,top 0 -20,right 20 0}
+
+# Contract a window by moving its sides inward
+super + alt + shift + {h,j,k,l}
+	bspc node -z {right -20 0,top 0 20,bottom 0 -20,left 20 0}
+
+# Move a floating window
+super + {Left,Down,Up,Right}
+	bspc node -v {-20 0,0 20,0 -20,20 0}
+
+# ==============================================================================
+# 6. HARDWARE & MEDIA CONTROLS
+# ==============================================================================
+
+# Audio Volume Control (PipeWire/WirePlumber)
+XF86AudioRaiseVolume
+	wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+
+
+XF86AudioLowerVolume
+	wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
+
+XF86AudioMute
+	wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle
+
+# Hardware Brightness Control (With 5% Safety Floor)
+XF86MonBrightnessUp
+	brightnessctl set +5%
+
+XF86MonBrightnessDown
+	cur=$(brightnessctl -m | cut -d, -f5 | tr -d %); if [ "$cur" -le 10 ]; then brightnessctl set 5%; else brightnessctl set 5%-; fi
+
+# ==============================================================================
+# 7. SCREENSHOTS (Maim)
+# ==============================================================================
+
+# Full Screen
+Print
+	maim ~/Pictures/Screenshots/full_$(date +%Y%m%d_%H%M%S).png
+
+# Select Region (Click and drag)
+shift + Print
+	maim -s ~/Pictures/Screenshots/region_$(date +%Y%m%d_%H%M%S).png
+
+# Full Screen (5 Second Delay)
+ctrl + Print
+	maim -d 5 ~/Pictures/Screenshots/delay_$(date +%Y%m%d_%H%M%S).png
+
+# ==============================================================================
+# 8. NOTIFICATION MANAGEMENT (Dunst)
+# ==============================================================================
+
+# Close current notification
+ctrl + space
+	dunstctl close
+
+# Close all active notifications
+ctrl + shift + space
+	dunstctl close-all
+
+# Restore last closed notification (History)
+ctrl + grave
+	dunstctl history-pop
+
+# ==============================================================================
+# MANUAL LOCK SCREEN
+# ==============================================================================
+super + x
+	~/.local/bin/lock

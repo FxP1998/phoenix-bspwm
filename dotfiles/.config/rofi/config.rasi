@@ -1,0 +1,15 @@
+/* ==============================================================================
+ * AUTHOR: M. H. IMAM (FxP1998)
+ * GITHUB: https://github.com/FxP1998
+ * ============================================================================== */
+
+configuration {
+    modi: "drun,run";
+    show-icons: true;
+    display-drun: "";
+    display-run: "";
+    font: "JetBrainsMono Nerd Font 11";
+    drun-display-format: "{name}";
+}
+
+@theme "catppuccin-mocha-red"

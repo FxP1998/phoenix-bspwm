@@ -1,0 +1,41 @@
+#!/bin/bash
+# ==============================================================================
+# AUTHOR: M. H. IMAM (FxP1998)
+# GITHUB: https://github.com/FxP1998
+# ==============================================================================
+
+# Catppuccin Mocha Red Color Palette
+CRUST='#11111bFF'
+BASE='#1e1e2eFF'
+TEXT='#cdd6f4FF'
+RED='#f38ba8FF'
+GREEN='#a6e3a1FF'
+TRANSPARENT='#00000000'
+
+i3lock \
+  --blur 7 \
+  --indicator \
+  --clock \
+  --time-str="%I:%M %p" \
+  --date-str="%A, %Y-%m-%d" \
+  --radius=120 \
+  --ring-width=8 \
+  \
+  --insidever-color=$BASE \
+  --ringver-color=$GREEN \
+  \
+  --insidewrong-color=$BASE \
+  --ringwrong-color=$RED \
+  \
+  --inside-color=$BASE \
+  --ring-color=$CRUST \
+  --line-color=$TRANSPARENT \
+  --separator-color=$TRANSPARENT \
+  \
+  --verif-color=$TEXT \
+  --wrong-color=$RED \
+  --time-color=$TEXT \
+  --date-color=$TEXT \
+  --layout-color=$TEXT \
+  --keyhl-color=$RED \
+  --bshl-color=$RED
