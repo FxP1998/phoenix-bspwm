@@ -1,0 +1,2 @@
+#!/bin/sh
+feh --no-fehbg --bg-fill '/home/phoenix/Pictures/wallpapers/Catppuccin/catppuccin-dark-blue-01.png' 
